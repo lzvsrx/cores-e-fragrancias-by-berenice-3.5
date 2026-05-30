@@ -1,5 +1,6 @@
+import csv
+import io
 import streamlit as st
-import pandas as pd
 import database as db
 import utils
 import datetime
@@ -67,16 +68,24 @@ def render_product_management():
         
         with col_ie1:
             st.write("### Exportar")
-            if not products_df_ex.empty:
+            if products_df_ex:
                 sales_summary_df = db.get_sales_summary_by_product()
                 pdf_bytes = utils.generate_pdf(products_df_ex, sales_summary_df)
                 st.download_button("Baixar PDF", data=pdf_bytes, file_name="produtos.pdf", mime="application/pdf", key="pdf_dl")
-                
-                csv_data = utils.convert_df_to_csv(products_df_ex.drop(columns=['image']).rename(columns={
-                    'name': 'nome', 'brand': 'marca', 'style': 'estilo', 
-                    'type': 'tipo', 'price': 'preco', 'quantity': 'quantidade', 
-                    'expiration_date': 'data_validade'
-                }))
+
+                csv_rows = []
+                for row in products_df_ex:
+                    csv_rows.append({
+                        'id': row.get('id'),
+                        'nome': row.get('name'),
+                        'marca': row.get('brand'),
+                        'estilo': row.get('style'),
+                        'tipo': row.get('type'),
+                        'preco': row.get('price'),
+                        'quantidade': row.get('quantity'),
+                        'data_validade': row.get('expiration_date'),
+                    })
+                csv_data = utils.convert_df_to_csv(csv_rows)
                 st.download_button("Exportar CSV", data=csv_data, file_name="produtos.csv", mime="text/csv", key="csv_dl")
             else:
                 st.info("Sem dados para exportar.")
@@ -87,13 +96,19 @@ def render_product_management():
             if uploaded_csv:
                 if st.button("Processar Importação", key="btn_import"):
                     try:
-                        # Tenta detectar o separador automaticamente
-                        imported_df = pd.read_csv(uploaded_csv, sep=None, engine='python')
-                        
-                        # Validar se as colunas mínimas existem
-                        # Colunas esperadas: nome, marca, estilo, tipo, preco, quantidade, data_validade
-                        # Vamos ser flexíveis, mas 'nome' é essencial
-                        if 'nome' not in imported_df.columns:
+                        raw_bytes = uploaded_csv.getvalue()
+                        text = raw_bytes.decode("utf-8-sig", errors="replace")
+                        sample = text[:2048]
+                        try:
+                            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+                            delimiter = dialect.delimiter
+                        except Exception:
+                            delimiter = ","
+
+                        reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
+                        imported_rows = list(reader)
+
+                        if not imported_rows or not reader.fieldnames or 'nome' not in reader.fieldnames:
                             st.error("❌ O arquivo CSV deve conter pelo menos a coluna 'nome'.")
                         else:
                             success_count = 0
@@ -101,9 +116,9 @@ def render_product_management():
                             error_log = []
                             
                             progress_bar = st.progress(0)
-                            total_rows = len(imported_df)
+                            total_rows = len(imported_rows)
                             
-                            for index, row in imported_df.iterrows():
+                            for index, row in enumerate(imported_rows):
                                 try:
                                     p_name = str(row.get('nome', '')).strip()
                                     if not p_name:
@@ -135,7 +150,7 @@ def render_product_management():
                                     
                                     # Tentar obter o ID se existir
                                     p_id = row.get('id', None)
-                                    if pd.notna(p_id):
+                                    if p_id not in (None, ""):
                                         try:
                                             p_id = int(p_id)
                                         except:
@@ -186,12 +201,12 @@ def render_product_management():
     
     # Filters
     filter_text = st.text_input("Buscar Produto", key="search_prod")
-    if not products_df.empty:
+    if products_df:
         if filter_text:
             products_df = utils.filter_products(products_df, filter_text)
 
         products_df, total_pages, current_page = utils.paginate_dataframe(
-            products_df.reset_index(drop=True), "manage_products", page_size=12
+            products_df, "manage_products", page_size=12
         )
         st.caption(f"Mostrando página {current_page} de {total_pages}")
         
@@ -203,7 +218,7 @@ def render_product_management():
             cols = st.columns(cols_per_row)
             for j in range(cols_per_row):
                 if i + j < rows:
-                    row = products_df.iloc[i + j]
+                    row = products_df[i + j]
                     with cols[j]:
                         with st.container(border=True):
                             # Image

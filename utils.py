@@ -1,8 +1,10 @@
 import base64
+import csv
 import io
 import unicodedata
 from pathlib import Path
 from difflib import SequenceMatcher
+from itertools import groupby
 
 import streamlit as st
 from PIL import Image
@@ -277,7 +279,6 @@ def apply_custom_css():
         </style>
     """, unsafe_allow_html=True)
 
-import pandas as pd
 from fpdf import FPDF
 
 
@@ -287,7 +288,7 @@ def _normalize_text(value):
     return text.lower().strip()
 
 
-def filter_products(products_df, query):
+def filter_products(products, query):
     """
     Busca inteligente com:
     - normalização de acentos e caixa
@@ -295,17 +296,13 @@ def filter_products(products_df, query):
     - tolerância a pequenos erros de digitação
     - ordenação por relevância
     """
-    if products_df is None or products_df.empty or not query:
-        return products_df
+    if not products or not query:
+        return products
 
     tokens = [t for t in _normalize_text(query).split() if t]
     if not tokens:
-        return products_df
+        return products
 
-    searchable_cols = ["id", "name", "brand", "style", "type", "price", "quantity", "expiration_date"]
-    df = products_df.copy()
-
-    # Campos com peso maior para ranquear melhor os resultados
     weighted_cols = [
         ("name", 4.0),
         ("brand", 3.0),
@@ -317,20 +314,14 @@ def filter_products(products_df, query):
         ("quantity", 0.8),
     ]
 
-    normalized_values = {}
-    for col in searchable_cols:
-        normalized_values[col] = df[col].fillna("").astype(str).map(_normalize_text)
-
     def token_score_in_text(token, text):
         if not text:
             return 0.0
         if token == text:
             return 1.0
         if token in text:
-            # Match parcial forte
             return min(0.95, 0.60 + (len(token) / max(len(text), len(token))) * 0.35)
 
-        # Similaridade por palavra (tolerância a typo)
         words = text.split()
         if not words:
             return 0.0
@@ -341,38 +332,29 @@ def filter_products(products_df, query):
                 best = ratio
         return best if best >= 0.74 else 0.0
 
-    scores = []
-    for idx in df.index:
+    scored = []
+    for row in products:
         row_score = 0.0
         token_hits = 0
-
         for token in tokens:
             best_token_score = 0.0
             for col, weight in weighted_cols:
-                col_text = normalized_values[col].at[idx]
-                raw = token_score_in_text(token, col_text)
+                raw = token_score_in_text(token, _normalize_text(row.get(col, "")))
                 weighted = raw * weight
                 if weighted > best_token_score:
                     best_token_score = weighted
-
             if best_token_score > 0:
                 token_hits += 1
                 row_score += best_token_score
 
-        # Bônus quando todos os termos são encontrados
         if token_hits == len(tokens):
             row_score += 1.2
 
-        scores.append((idx, row_score, token_hits))
+        if token_hits >= 1 and row_score > 0:
+            scored.append((row_score, row))
 
-    # Mantém resultados relevantes; exige pelo menos um termo útil
-    min_hits = 1
-    results = [(idx, score) for idx, score, hits in scores if hits >= min_hits and score > 0]
-    if not results:
-        return df.iloc[0:0]
-
-    ordered_index = [idx for idx, _ in sorted(results, key=lambda x: x[1], reverse=True)]
-    return df.loc[ordered_index]
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [row for _, row in scored]
 
 
 def process_image(image_source):
@@ -392,10 +374,10 @@ def process_image(image_source):
 
 def paginate_dataframe(df, key_prefix, page_size=24):
     """
-    Pagina um DataFrame para reduzir tempo de renderização no Streamlit.
-    Retorna (df_paginado, total_paginas, pagina_atual_1_based).
+    Pagina uma lista de registros para reduzir tempo de renderização no Streamlit.
+    Retorna (recortes, total_paginas, pagina_atual_1_based).
     """
-    if df is None or df.empty:
+    if not df:
         return df, 1, 1
 
     total_items = len(df)
@@ -411,7 +393,7 @@ def paginate_dataframe(df, key_prefix, page_size=24):
 
     start = (page - 1) * page_size
     end = start + page_size
-    return df.iloc[start:end], total_pages, page
+    return df[start:end], total_pages, page
 
 
 def generate_pdf(products_df, sales_summary_df=None):
@@ -436,28 +418,38 @@ def generate_pdf(products_df, sales_summary_df=None):
         for chunk in chunks:
             pdf.cell(0, 6, txt=chunk, ln=1)
 
-    if products_df is None or products_df.empty:
+    if not products_df:
         pdf.set_font("Arial", size=11)
         pdf.cell(0, 8, txt=clean_text("Nenhum produto cadastrado."), ln=1)
     else:
         sold_map = {}
-        if sales_summary_df is not None and not sales_summary_df.empty:
-            for _, sale_row in sales_summary_df.iterrows():
+        if sales_summary_df:
+            for sale_row in sales_summary_df:
                 try:
                     sold_map[int(sale_row.get("product_id"))] = int(sale_row.get("sold_quantity") or 0)
                 except Exception:
                     continue
 
-        ordered_df = products_df.sort_values(by=["type", "brand", "name"], na_position="last")
-        grouped = ordered_df.groupby("type", dropna=False)
+        ordered_df = sorted(
+            products_df,
+            key=lambda row: (
+                clean_text(row.get("type", "")) or "zzzz",
+                clean_text(row.get("brand", "")) or "zzzz",
+                clean_text(row.get("name", "")) or "zzzz",
+            ),
+        )
 
-        for product_type, group in grouped:
-            type_label = clean_text(product_type if pd.notna(product_type) and str(product_type).strip() else "Sem tipo")
+        def type_key(row):
+            value = row.get("type")
+            return value if value is not None and str(value).strip() else "Sem tipo"
+
+        for product_type, group in groupby(ordered_df, key=type_key):
+            type_label = clean_text(product_type if product_type else "Sem tipo")
             pdf.set_font("Arial", "B", 11)
             pdf.multi_cell(0, 8, txt=f"Tipo: {type_label}")
             pdf.set_font("Arial", size=10)
 
-            for _, row in group.iterrows():
+            for row in group:
                 product_id = row.get("id", 0)
                 try:
                     sold_qty = int(sold_map.get(int(product_id), 0))
@@ -486,12 +478,23 @@ def generate_pdf(products_df, sales_summary_df=None):
         return b""
 
 def convert_df_to_csv(df):
-    # Criamos uma cópia para não afetar o DataFrame original da tela
-    df_export = df.copy()
-    
-    # Se a coluna image existir, converte os bytes para string Base64
-    if 'image' in df_export.columns:
-        df_export['image'] = df_export['image'].apply(
-            lambda x: base64.b64encode(x).decode('utf-8') if isinstance(x, bytes) else ""
-        )
-    return df_export.to_csv(index=False).encode('utf-8')
+    rows = df or []
+    if not rows:
+        return "".encode("utf-8")
+
+    output = io.StringIO()
+    fieldnames = list(rows[0].keys())
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+
+    for row in rows:
+        cleaned = {}
+        for key in fieldnames:
+            value = row.get(key)
+            if isinstance(value, bytes):
+                cleaned[key] = base64.b64encode(value).decode("utf-8")
+            else:
+                cleaned[key] = value
+        writer.writerow(cleaned)
+
+    return output.getvalue().encode("utf-8")

@@ -1,6 +1,4 @@
 streamlit
-pandas
 Pillow
-utils
 FPDF
 bcrypt==4.3.0

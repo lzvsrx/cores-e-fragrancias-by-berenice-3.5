@@ -1,5 +1,4 @@
 import sqlite3
-import pandas as pd
 import bcrypt
 import datetime
 import time
@@ -101,6 +100,11 @@ def get_connection():
     # Helper para criar conexão com timeout maior para evitar locks
     return sqlite3.connect(DB_NAME, timeout=30)
 
+
+def _rows_to_dicts(cursor, rows):
+    columns = [description[0] for description in cursor.description or []]
+    return [dict(zip(columns, row)) for row in rows]
+
 def execute_write_query(query, params=()):
     """
     Executa uma query de escrita (INSERT, UPDATE, DELETE) com lógica de retry robusta.
@@ -135,22 +139,19 @@ def execute_write_query(query, params=()):
 def execute_read_query(query, params=(), fetch_one=False, use_pandas=False):
     """
     Executa uma query de leitura (SELECT) com lógica de retry.
-    Retorna resultado, DataFrame ou None/Empty dependendo dos parâmetros.
+    Retorna uma lista de dicionários para múltiplas linhas ou uma tupla para fetch_one.
     """
     max_retries = 5
     conn = None
     for attempt in range(max_retries):
         try:
             conn = get_connection()
-            if use_pandas:
-                return pd.read_sql_query(query, conn, params=params)
-            else:
-                c = conn.cursor()
-                c.execute(query, params)
-                if fetch_one:
-                    return c.fetchone()
-                else:
-                    return c.fetchall()
+            c = conn.cursor()
+            c.execute(query, params)
+            if fetch_one:
+                return c.fetchone()
+            rows = c.fetchall()
+            return _rows_to_dicts(c, rows)
         except sqlite3.OperationalError as e:
             if "locked" in str(e).lower():
                 if attempt < max_retries - 1:
@@ -158,15 +159,15 @@ def execute_read_query(query, params=(), fetch_one=False, use_pandas=False):
                     if conn: conn.close()
                     continue
             print(f"Erro de leitura no DB (tentativa {attempt+1}): {e}")
-            return pd.DataFrame() if use_pandas else None
+            return [] if not fetch_one else None
         except Exception as e:
             print(f"Erro geral de leitura: {e}")
-            return pd.DataFrame() if use_pandas else None
+            return [] if not fetch_one else None
         finally:
             if conn: 
                 try: conn.close()
                 except: pass
-    return pd.DataFrame() if use_pandas else None
+    return [] if not fetch_one else None
 
 # -------------------------------------------------------------------
 # Funções de Negócio Refatoradas
@@ -192,10 +193,7 @@ def update_user_image(user_id, image_bytes):
     return None
 
 def get_birthday_clients():
-    return execute_read_query(
-        "SELECT * FROM users WHERE role='cliente' AND birth_date IS NOT NULL AND birth_date != ''", 
-        use_pandas=True
-    )
+    return execute_read_query("SELECT * FROM users WHERE role='cliente' AND birth_date IS NOT NULL AND birth_date != ''")
 
 def add_product(nome, marca, estilo, tipo, preco, quantidade, data_validade, image_bytes, id=None):
     if id is not None:
@@ -224,7 +222,7 @@ def add_product(nome, marca, estilo, tipo, preco, quantidade, data_validade, ima
         )
 
 def get_products():
-    return execute_read_query("SELECT * FROM products", use_pandas=True)
+    return execute_read_query("SELECT * FROM products")
 
 def update_product(id, nome, marca, estilo, tipo, preco, quantidade, data_validade, image_bytes=None):
     if image_bytes:
@@ -251,7 +249,7 @@ def get_sales_report():
         LEFT JOIN products p ON s.product_id = p.id
         LEFT JOIN users u ON s.user_id = u.id
     '''
-    return execute_read_query(query, use_pandas=True)
+    return execute_read_query(query)
 
 def get_sales_summary_by_product():
     query = '''
@@ -259,7 +257,7 @@ def get_sales_summary_by_product():
         FROM sales
         GROUP BY product_id
     '''
-    return execute_read_query(query, use_pandas=True)
+    return execute_read_query(query)
 
 def register_sale(product_id, quantity, user_id=None):
     """

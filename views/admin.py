@@ -1,5 +1,6 @@
 import streamlit as st
-import pandas as pd
+import sqlite3
+import html
 import database as db
 import utils
 import views.components as components
@@ -9,15 +10,45 @@ def show_admin_view(user):
     st.title(f"Painel Administrativo - Bem-vindo, {user[4]}")
     
     tab1, tab2, tab3 = st.tabs(["Dashboard", "Gerenciar Produtos", "Gerenciar Usuários"])
+
+    def render_simple_table(records, columns):
+        if not records:
+            st.info("Sem registros para exibir.")
+            return
+
+        header = "".join(f"<th style='text-align:left; padding:8px; border-bottom:1px solid #ddd;'>{html.escape(str(col))}</th>" for col in columns)
+        rows_html = []
+        for record in records:
+            cells = []
+            for col in columns:
+                value = record.get(col, "")
+                if value is None:
+                    value = ""
+                cells.append(f"<td style='padding:8px; border-bottom:1px solid #eee;'>{html.escape(str(value))}</td>")
+            rows_html.append("<tr>" + "".join(cells) + "</tr>")
+
+        st.markdown(
+            f"""
+            <div style="overflow-x:auto; border:1px solid #e5d7b8; border-radius:8px; background:#fffdf4;">
+                <table style="width:100%; border-collapse:collapse;">
+                    <thead><tr>{header}</tr></thead>
+                    <tbody>
+                        {''.join(rows_html)}
+                    </tbody>
+                </table>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     
     with tab1:
         # Aniversariantes do Dia
         birthday_clients = db.get_birthday_clients()
-        if not birthday_clients.empty:
+        if birthday_clients:
             today = datetime.date.today()
             birthdays_today = []
             
-            for index, row in birthday_clients.iterrows():
+            for row in birthday_clients:
                 try:
                     bdate_str = str(row['birth_date'])
                     # Assume formato YYYY-MM-DD
@@ -51,9 +82,9 @@ def show_admin_view(user):
         
         col1, col2, col3 = st.columns(3)
         
-        total_stock = products['quantity'].sum() if not products.empty else 0
-        total_sold = sales['quantity'].sum() if not sales.empty else 0
-        total_revenue = sales['total_value'].sum() if not sales.empty else 0.0
+        total_stock = sum(int(row.get('quantity') or 0) for row in products) if products else 0
+        total_sold = sum(int(row.get('quantity') or 0) for row in sales) if sales else 0
+        total_revenue = sum(float(row.get('total_value') or 0.0) for row in sales) if sales else 0.0
         
         col1.metric("Produtos em Estoque", int(total_stock))
         col2.metric("Produtos Vendidos", int(total_sold))
@@ -64,7 +95,10 @@ def show_admin_view(user):
         col4, col5 = st.columns(2)
         
         # Valor total em estoque (preço * quantidade para cada produto)
-        total_stock_value = (products['price'] * products['quantity']).sum() if not products.empty else 0.0
+        total_stock_value = (
+            sum(float(row.get('price') or 0.0) * int(row.get('quantity') or 0) for row in products)
+            if products else 0.0
+        )
         
         col4.metric("Valor Total em Estoque", f"R$ {total_stock_value:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
         
@@ -79,16 +113,36 @@ def show_admin_view(user):
         """, unsafe_allow_html=True)
 
         st.subheader("Estoque vs Vendas")
-        if not products.empty or not sales.empty:
-            chart_data = pd.DataFrame({
-                'Categoria': ['Estoque', 'Vendidos'],
-                'Quantidade': [total_stock, total_sold]
-            })
-            st.bar_chart(chart_data, x='Categoria', y='Quantidade', color="#800020")
+        if products or sales:
+            max_value = max(total_stock, total_sold, 1)
+            st.markdown(
+                f"""
+                <div style="display:flex; flex-direction:column; gap:10px; margin-top:6px;">
+                    <div>
+                        <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                            <span><b>Estoque</b></span><span>{int(total_stock)}</span>
+                        </div>
+                        <div style="background:#F0E6D6; border-radius:999px; overflow:hidden; height:16px;">
+                            <div style="width:{(total_stock / max_value) * 100:.2f}%; height:100%; background:#800020;"></div>
+                        </div>
+                    </div>
+                    <div>
+                        <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                            <span><b>Vendidos</b></span><span>{int(total_sold)}</span>
+                        </div>
+                        <div style="background:#F0E6D6; border-radius:999px; overflow:hidden; height:16px;">
+                            <div style="width:{(total_sold / max_value) * 100:.2f}%; height:100%; background:#36454F;"></div>
+                        </div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
             
         st.subheader("Últimas Vendas")
-        if not sales.empty:
-            st.dataframe(sales.sort_values(by='sale_date', ascending=False).head(10))
+        if sales:
+            sorted_sales = sorted(sales, key=lambda row: row.get('sale_date') or '', reverse=True)
+            render_simple_table(sorted_sales[:10], ["id", "product_name", "quantity", "total_value", "sale_date", "user_name"])
         else:
             st.info("Nenhuma venda registrada.")
 
@@ -96,7 +150,7 @@ def show_admin_view(user):
         st.subheader("Visualização Rápida de Produtos (Dashboard)")
         
         # Dashboard Product Grid (Simplified view, maybe allow sale)
-        if not products.empty:
+        if products:
             # Area de Pesquisa no Dashboard
             search_term = st.text_input("🔍 Pesquisar Produto", placeholder="Nome, Marca, Estilo ou Tipo...", key="dash_search")
             
@@ -104,7 +158,7 @@ def show_admin_view(user):
                 products = utils.filter_products(products, search_term)
 
             products, total_pages, current_page = utils.paginate_dataframe(
-                products.reset_index(drop=True), "admin_dash_products", page_size=12
+                products, "admin_dash_products", page_size=12
             )
             st.caption(f"Mostrando página {current_page} de {total_pages}")
 
@@ -115,7 +169,7 @@ def show_admin_view(user):
                 cols = st.columns(cols_per_row)
                 for j in range(cols_per_row):
                     if i + j < rows:
-                        row = products.iloc[i + j]
+                        row = products[i + j]
                         with cols[j]:
                             with st.container(border=True):
                                 # Image
@@ -197,6 +251,10 @@ def show_admin_view(user):
         conn = db.get_connection()
         # Update query to show new fields if needed, but dataframe might get too wide. 
         # Keeping it simple or maybe showing email/phone.
-        users_df = pd.read_sql("SELECT id, username, role, name, email, phone FROM users", conn)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, username, role, name, email, phone FROM users")
+        columns = [desc[0] for desc in cursor.description]
+        users_df = [dict(zip(columns, row)) for row in cursor.fetchall()]
         conn.close()
-        st.dataframe(users_df)
+        render_simple_table(users_df, ["id", "username", "role", "name", "email", "phone"])

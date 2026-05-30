@@ -8,7 +8,7 @@ def show_client_view(user):
 
     products = db.get_products()
 
-    if not products.empty:
+    if products:
         st.sidebar.header("Filtros")
         search = st.sidebar.text_input("Buscar")
 
@@ -18,7 +18,7 @@ def show_client_view(user):
 
         cols_per_row = 3
         filtered_df, total_pages, current_page = utils.paginate_dataframe(
-            filtered_df.reset_index(drop=True), "client_catalog", page_size=9
+            filtered_df, "client_catalog", page_size=9
         )
         st.caption(f"Mostrando página {current_page} de {total_pages}")
         rows = len(filtered_df)
@@ -27,7 +27,7 @@ def show_client_view(user):
             cols = st.columns(cols_per_row)
             for j in range(cols_per_row):
                 if i + j < rows:
-                    row = filtered_df.iloc[i + j]
+                    row = filtered_df[i + j]
                     with cols[j]:
                         with st.container(border=True):
                             image_source = utils.get_product_image_source(row)

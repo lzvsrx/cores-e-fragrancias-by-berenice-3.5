@@ -9,11 +9,11 @@ def show_employee_view(user):
     
     # Aniversariantes do Dia
     birthday_clients = db.get_birthday_clients()
-    if not birthday_clients.empty:
+    if birthday_clients:
         today = datetime.date.today()
         birthdays_today = []
         
-        for index, row in birthday_clients.iterrows():
+        for row in birthday_clients:
             try:
                 bdate_str = str(row['birth_date'])
                 bdate = datetime.datetime.strptime(bdate_str, "%Y-%m-%d").date()
@@ -45,12 +45,12 @@ def show_employee_view(user):
         st.header("Ponto de Venda")
         
         products = db.get_products()
-        if not products.empty:
+        if products:
             search_term = st.text_input("Buscar no PDV", placeholder="Digite nome, marca, tipo, id...")
             if search_term:
                 products = utils.filter_products(products, search_term)
 
-            product_options = {f"{row['id']} - {row['name']} (Estoque: {row['quantity']})": row['id'] for index, row in products.iterrows() if row['quantity'] > 0}
+            product_options = {f"{row['id']} - {row['name']} (Estoque: {row['quantity']})": row['id'] for row in products if int(row.get('quantity') or 0) > 0}
             
             if product_options:
                 selected_option = st.selectbox("Selecione o Produto", list(product_options.keys()))
