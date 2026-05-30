@@ -1,0 +1,4 @@
+streamlit
+pandas
+Pillow
+bcrypt==4.3.0
