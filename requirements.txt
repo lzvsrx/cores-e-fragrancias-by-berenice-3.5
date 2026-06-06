@@ -1,4 +1,0 @@
-streamlit
-Pillow
-FPDF
-bcrypt==4.3.0
